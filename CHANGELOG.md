@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (pre-1.0: breaking changes bump the minor version).
 
+## [1.0.0] - 2026-06-15
+
+First stable release. The API introduced in 0.5.0 is now committed to as stable —
+no further breaking changes before a 2.0. No code or API changes since 0.5.0.
+
+### Fixed
+- `repository` metadata now points at the current location
+  (`github.com/qxp-gh/prehrajto-scraper`). crates.io releases are immutable, so
+  0.5.0 and earlier keep the old (redirected) URL; the crate's main page reflects
+  this latest release.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added

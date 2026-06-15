@@ -18,7 +18,7 @@ Async Rust library for searching videos and getting download links from [prehraj
 
 ```toml
 [dependencies]
-prehrajto-core = "0.5"
+prehrajto-core = "1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 

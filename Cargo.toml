@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 authors = ["xdkid1337"]
@@ -43,4 +43,4 @@ proptest = "1"
 wiremock = "0.5"
 
 # Internal crates
-prehrajto-core = { path = "crates/prehrajto-core", version = "0.5.0" }
+prehrajto-core = { path = "crates/prehrajto-core", version = "1.0.0" }
