@@ -9,7 +9,7 @@ Async Rust library for searching videos and getting download links from [prehraj
 - 🎯 Extract direct CDN URLs (premiumcdn.net) for streaming/downloading
 - 🎬 **Quality selection** — fetch all quality variants, returns best by default
 - 📝 **Subtitle extraction** — parse VTT subtitle tracks with language metadata
-- 📦 **Original file download** — cookie-based flow for the original uploaded file
+- 📦 **Original file download** — original uploaded file via authenticated (`refresh_token`) flow
 - ⏱️ Built-in rate limiting to respect server limits
 - 🔄 Automatic retry with exponential backoff
 - 📦 Serde serialization support
@@ -18,7 +18,7 @@ Async Rust library for searching videos and getting download links from [prehraj
 
 ```toml
 [dependencies]
-prehrajto-core = "0.4"
+prehrajto-core = "0.5"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
 
     // Get best quality CDN URL
     if let Some(video) = results.first() {
-        let cdn_url = scraper.get_direct_url(&video.video_slug, &video.video_id).await?;
+        let cdn_url = scraper.fetch_stream_url(&video.video_slug, &video.video_id).await?;
         println!("CDN URL: {}", cdn_url);
     }
 
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
 Fetch all quality variants and subtitle tracks in a **single request**:
 
 ```rust
-let data = scraper.get_video_page_data(slug, id).await?;
+let data = scraper.fetch_video_page(slug, id).await?;
 
 // Quality sources (e.g., 1080p, 720p)
 for source in &data.sources {
@@ -70,15 +70,23 @@ for track in &data.subtitles {
 }
 ```
 
-### Original File Download
+### Original File Download (authenticated)
 
-Get the original uploaded file via cookie-based download flow:
+The original uploaded file (e.g. the full `.mkv`) is gated behind a logged-in
+session. Build the scraper with a `refresh_token` cookie taken from a logged-in
+browser (DevTools → Application → Cookies → `refresh_token`):
 
 ```rust
-let original = scraper.get_original_url(slug, id).await?;
-println!("{}p {} — {}", original.resolution, original.label, original.url);
-// e.g., 2160p MKV original
+let scraper = PrehrajtoScraper::with_refresh_token("your_refresh_token_cookie")?;
+
+let original = scraper.fetch_original_download(slug, id).await?;
+println!("{} — {}", original.label, original.url);
+// e.g. the original .mkv on premiumcdn.net
 ```
+
+Search and streaming (`fetch_stream_url`) work anonymously — only the original
+file download needs the token. The short-lived `access_token` is refreshed
+automatically; the long-lived `refresh_token` is the only credential you supply.
 
 ## Configuration
 
@@ -86,9 +94,10 @@ println!("{}p {} — {}", original.resolution, original.label, original.url);
 use prehrajto_core::{PrehrajtoScraper, ClientConfig};
 
 let config = ClientConfig {
-    requests_per_second: 1.0,  // Max requests per second
-    timeout_secs: 60,          // Request timeout
-    max_retries: 5,            // Retry attempts on failure
+    requests_per_second: 1.0,            // Max requests per second
+    timeout_secs: 60,                    // Request timeout
+    max_retries: 5,                      // Retry attempts on failure
+    refresh_token: Some("…".into()),     // Optional: auth for original-file download
 };
 
 let scraper = PrehrajtoScraper::with_config(config)?;
@@ -133,14 +142,14 @@ let scraper = PrehrajtoScraper::with_config(config)?;
 | Method | Description |
 |--------|-------------|
 | `search(query)` | Search videos by keywords |
-| `get_download_url(slug, id)` | Get download page URL (sync) |
-| `get_direct_url(slug, id)` | Get best quality CDN URL |
-| `get_video_sources(slug, id)` | Get all quality variants |
-| `get_video_page_data(slug, id)` | Get sources + subtitles (single fetch) |
-| `get_subtitle_tracks(slug, id)` | Get subtitle tracks |
-| `get_original_url(slug, id)` | Get original file via download flow |
+| `download_page_url(slug, id)` | Get download page URL (sync) |
+| `fetch_stream_url(slug, id)` | Get best quality CDN URL |
+| `fetch_stream_sources(slug, id)` | Get all quality variants |
+| `fetch_video_page(slug, id)` | Get sources + subtitles (single fetch) |
+| `fetch_subtitles(slug, id)` | Get subtitle tracks |
+| `fetch_original_download(slug, id)` | Get original file via download flow |
 | `search_movie(name, year)` | Search for a specific movie |
-| `search_movie_all(name, year)` | Search with all matching results |
+| `search_movies(name, year)` | Search with all matching results |
 
 ## License
 

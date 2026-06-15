@@ -27,7 +27,7 @@
 //!     
 //!     // Get direct CDN URL for streaming/downloading
 //!     if let Some(video) = results.first() {
-//!         let cdn_url = scraper.get_direct_url(&video.video_slug, &video.video_id).await?;
+//!         let cdn_url = scraper.fetch_stream_url(&video.video_slug, &video.video_id).await?;
 //!         println!("Direct CDN URL: {}", cdn_url);
 //!         // Returns: https://pf-storage4.premiumcdn.net/...?token=...&expires=...
 //!     }
@@ -38,7 +38,7 @@
 //!
 //! # Direct CDN URLs
 //!
-//! The [`PrehrajtoScraper::get_direct_url`] method extracts the actual CDN URL
+//! The [`PrehrajtoScraper::fetch_stream_url`] method extracts the actual CDN URL
 //! (premiumcdn.net) from the download page. This URL can be used for direct
 //! file download or video streaming.
 //!
@@ -60,8 +60,8 @@ pub use error::{PrehrajtoError, Result};
 
 // Re-export parser functions
 pub use parser::{
-    parse_direct_url, parse_original_download_url, parse_search_results, parse_subtitle_tracks,
-    parse_video_sources,
+    parse_stream_url, parse_original_download, parse_search_results, parse_subtitles,
+    parse_stream_sources,
 };
 
 // Re-export main scraper API

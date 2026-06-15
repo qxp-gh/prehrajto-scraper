@@ -54,9 +54,7 @@ pub async fn get_download_url(
     video_id: String,
 ) -> Result<String, String> {
     let scraper = state.scraper.lock().await;
-    scraper
-        .get_download_url(&video_slug, &video_id)
-        .map_err(|e| e.to_string())
+    Ok(scraper.download_page_url(&video_slug, &video_id))
 }
 
 /// Search for a movie on prehraj.to

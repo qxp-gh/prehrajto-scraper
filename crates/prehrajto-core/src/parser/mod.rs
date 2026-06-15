@@ -6,6 +6,6 @@ pub mod direct_url;
 pub mod search;
 
 pub use direct_url::{
-    parse_direct_url, parse_original_download_url, parse_subtitle_tracks, parse_video_sources,
+    parse_stream_url, parse_original_download, parse_subtitles, parse_stream_sources,
 };
 pub use search::parse_search_results;

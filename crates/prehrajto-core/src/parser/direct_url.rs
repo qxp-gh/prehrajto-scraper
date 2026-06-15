@@ -23,7 +23,7 @@ use scraper::{Html, Selector};
 /// # Returns
 /// Vector of [`VideoSource`] sorted by resolution ascending.
 /// Empty vec if no player blocks found.
-pub fn parse_video_sources(html: &str) -> Vec<VideoSource> {
+pub fn parse_stream_sources(html: &str) -> Vec<VideoSource> {
     // Primary: VideoJS videos.push({...}) blocks
     let sources = extract_videojs_sources(html);
     if !sources.is_empty() {
@@ -44,7 +44,7 @@ pub fn parse_video_sources(html: &str) -> Vec<VideoSource> {
 ///
 /// # Returns
 /// Vector of [`SubtitleTrack`]. Empty vec if no tracks found.
-pub fn parse_subtitle_tracks(html: &str) -> Vec<SubtitleTrack> {
+pub fn parse_subtitles(html: &str) -> Vec<SubtitleTrack> {
     let tracks = extract_videojs_tracks(html);
     if !tracks.is_empty() {
         return tracks;
@@ -66,7 +66,7 @@ pub fn parse_subtitle_tracks(html: &str) -> Vec<SubtitleTrack> {
 ///
 /// # Errors
 /// Returns `NotFound` if no CDN link found in the redirect page
-pub fn parse_original_download_url(html: &str) -> Result<VideoSource> {
+pub fn parse_original_download(html: &str) -> Result<VideoSource> {
     let document = Html::parse_document(html);
     let selector = Selector::parse("a[href]")
         .map_err(|_| PrehrajtoError::ParseError("Invalid selector".to_string()))?;
@@ -116,9 +116,9 @@ pub fn parse_original_download_url(html: &str) -> Result<VideoSource> {
 ///
 /// # Errors
 /// Returns `NotFound` if no CDN URL could be extracted
-pub fn parse_direct_url(html: &str) -> Result<String> {
+pub fn parse_stream_url(html: &str) -> Result<String> {
     // Try structured source parsing first — pick highest resolution
-    let sources = parse_video_sources(html);
+    let sources = parse_stream_sources(html);
     if let Some(best) = sources.iter().max_by_key(|s| s.resolution) {
         return Ok(best.url.clone());
     }
@@ -509,11 +509,11 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // parse_video_sources — VideoJS
+    // parse_stream_sources — VideoJS
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_video_sources_videojs() {
+    fn test_parse_stream_sources_videojs() {
         let html = r#"
         <script>
             var videos = [];
@@ -522,7 +522,7 @@ mod tests {
         </script>
         "#;
 
-        let sources = parse_video_sources(html);
+        let sources = parse_stream_sources(html);
         assert_eq!(sources.len(), 2);
 
         assert_eq!(sources[0].resolution, 1080);
@@ -537,11 +537,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_video_sources — JWPlayer
+    // parse_stream_sources — JWPlayer
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_video_sources_jwplayer() {
+    fn test_parse_stream_sources_jwplayer() {
         let html = r#"
         <script>
             if(player === "jwplayer") {
@@ -553,7 +553,7 @@ mod tests {
         </script>
         "#;
 
-        let sources = parse_video_sources(html);
+        let sources = parse_stream_sources(html);
         assert_eq!(sources.len(), 2);
 
         assert_eq!(sources[0].resolution, 720);
@@ -564,11 +564,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_video_sources — both blocks (VideoJS preferred)
+    // parse_stream_sources — both blocks (VideoJS preferred)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_video_sources_prefers_videojs() {
+    fn test_parse_stream_sources_prefers_videojs() {
         let html = r#"
         <script>
             var videos = [];
@@ -582,30 +582,30 @@ mod tests {
         </script>
         "#;
 
-        let sources = parse_video_sources(html);
+        let sources = parse_stream_sources(html);
         // VideoJS found → should use VideoJS, not JWPlayer
         assert_eq!(sources.len(), 1);
         assert!(sources[0].url.contains("videojs"));
     }
 
     // -----------------------------------------------------------------------
-    // parse_video_sources — empty
+    // parse_stream_sources — empty
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_video_sources_empty() {
+    fn test_parse_stream_sources_empty() {
         let html = r#"<html><body><p>No video here</p></body></html>"#;
 
-        let sources = parse_video_sources(html);
+        let sources = parse_stream_sources(html);
         assert!(sources.is_empty());
     }
 
     // -----------------------------------------------------------------------
-    // parse_original_download_url
+    // parse_original_download
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_original_download_url() {
+    fn test_parse_original_download() {
         let html = r#"
         <html><body>
             <h1>Redirect</h1>
@@ -613,7 +613,7 @@ mod tests {
         </body></html>
         "#;
 
-        let source = parse_original_download_url(html).unwrap();
+        let source = parse_original_download(html).unwrap();
         assert!(source.url.contains("premiumcdn.net"));
         assert_eq!(source.resolution, 2160);
         assert_eq!(source.label, "2160p");
@@ -622,10 +622,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_original_download_url_no_link() {
+    fn test_parse_original_download_no_link() {
         let html = r#"<html><body><p>No link here</p></body></html>"#;
 
-        let result = parse_original_download_url(html);
+        let result = parse_original_download(html);
         assert!(result.is_err());
         match result {
             Err(PrehrajtoError::NotFound(_)) => {}
@@ -634,11 +634,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_direct_url — best quality selection
+    // parse_stream_url — best quality selection
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_parse_direct_url_picks_best_quality() {
+    fn test_parse_stream_url_picks_best_quality() {
         let html = r#"
         <script>
             var videos = [];
@@ -647,7 +647,7 @@ mod tests {
         </script>
         "#;
 
-        let result = parse_direct_url(html).unwrap();
+        let result = parse_stream_url(html).unwrap();
         // Should return 1080p, NOT 720p
         assert!(result.contains("1080p.mp4"));
     }
@@ -705,7 +705,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         let url = result.unwrap();
         assert!(url.contains("premiumcdn.net"));
@@ -722,7 +722,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("premiumcdn.net"));
     }
@@ -739,7 +739,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("premiumcdn.net"));
     }
@@ -756,7 +756,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("premiumcdn.net"));
     }
@@ -773,7 +773,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("premiumcdn.net"));
     }
@@ -788,7 +788,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("premiumcdn.net"));
     }
@@ -803,7 +803,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_err());
         match result {
             Err(PrehrajtoError::NotFound(_)) => {}
@@ -838,7 +838,7 @@ mod tests {
         </html>
         "#;
 
-        let result = parse_direct_url(html);
+        let result = parse_stream_url(html);
         assert!(result.is_ok());
         let url = result.unwrap();
         assert!(url.contains("token=abc&expires=123"));
@@ -846,7 +846,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_subtitle_tracks — VideoJS
+    // parse_subtitles — VideoJS
     // -----------------------------------------------------------------------
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
         ];
         "#;
 
-        let tracks = parse_subtitle_tracks(html);
+        let tracks = parse_subtitles(html);
         assert_eq!(tracks.len(), 2);
 
         assert_eq!(tracks[0].language, "eng");
@@ -883,7 +883,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_subtitle_tracks — JWPlayer
+    // parse_subtitles — JWPlayer
     // -----------------------------------------------------------------------
 
     #[test]
@@ -895,7 +895,7 @@ mod tests {
         ];
         "#;
 
-        let tracks = parse_subtitle_tracks(html);
+        let tracks = parse_subtitles(html);
         assert_eq!(tracks.len(), 2);
 
         assert_eq!(tracks[0].language, "eng");
@@ -907,13 +907,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_subtitle_tracks — empty
+    // parse_subtitles — empty
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_no_tracks() {
         let html = "<html><body>no tracks here</body></html>";
-        let tracks = parse_subtitle_tracks(html);
+        let tracks = parse_subtitles(html);
         assert!(tracks.is_empty());
     }
 

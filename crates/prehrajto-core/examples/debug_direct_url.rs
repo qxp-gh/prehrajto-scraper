@@ -1,4 +1,4 @@
-//! Debug script to test get_direct_url functionality
+//! Debug script to test fetch_stream_url functionality
 //!
 //! Run with: cargo run --example debug_direct_url -p prehrajto-core
 
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Fetching {}...\n", video.download_url);
 
     match scraper
-        .get_direct_url(&video.video_slug, &video.video_id)
+        .fetch_stream_url(&video.video_slug, &video.video_id)
         .await
     {
         Ok(direct_url) => {

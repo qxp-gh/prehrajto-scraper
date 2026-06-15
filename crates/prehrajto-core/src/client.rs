@@ -19,6 +19,14 @@ pub struct ClientConfig {
     pub timeout_secs: u64,
     /// Maximum retry attempts for transient errors (default: 3)
     pub max_retries: u32,
+    /// Long-lived `refresh_token` cookie for an authenticated session (default: None)
+    ///
+    /// prehraj.to gates the original-file download behind a logged-in session.
+    /// The `refresh_token` is the durable credential: when present, the server
+    /// auto-mints a short-lived `access_token` on the first request (captured by
+    /// the cookie jar), which authorizes `?do=download`. Anonymous streaming
+    /// (`fetch_stream_url`) works without it.
+    pub refresh_token: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -27,6 +35,7 @@ impl Default for ClientConfig {
             requests_per_second: 2.0,
             timeout_secs: 30,
             max_retries: 3,
+            refresh_token: None,
         }
     }
 }
@@ -98,10 +107,9 @@ impl PrehrajtoClient {
 
     /// Create a new client with custom configuration
     pub fn with_config(config: ClientConfig) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .user_agent(USER_AGENT)
-            .cookie_store(true)
             .redirect(reqwest::redirect::Policy::none())
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
@@ -110,9 +118,32 @@ impl PrehrajtoClient {
                     "cs-CZ,cs;q=0.9,en;q=0.8".parse().unwrap(),
                 );
                 headers
-            })
-            .build()
-            .map_err(PrehrajtoError::HttpError)?;
+            });
+
+        // Authenticated session: seed the long-lived `refresh_token` into a cookie
+        // jar. The jar both supplies the token on requests and stores the
+        // short-lived `access_token` the server mints in response, so the
+        // two-step download flow (warmup → `?do=download`) is authorized.
+        // Without a token we fall back to a plain in-memory cookie store, which
+        // is enough for anonymous search and streaming.
+        match config.refresh_token.as_deref().map(str::trim) {
+            Some(token) if !token.is_empty() => {
+                let jar = reqwest::cookie::Jar::default();
+                let url = BASE_URL
+                    .parse::<reqwest::Url>()
+                    .map_err(|e| PrehrajtoError::ParseError(e.to_string()))?;
+                jar.add_cookie_str(
+                    &format!("refresh_token={token}; Domain=prehraj.to; Path=/"),
+                    &url,
+                );
+                builder = builder.cookie_provider(Arc::new(jar));
+            }
+            _ => {
+                builder = builder.cookie_store(true);
+            }
+        }
+
+        let client = builder.build().map_err(PrehrajtoError::HttpError)?;
 
         Ok(Self {
             client,
@@ -301,6 +332,7 @@ mod tests {
             requests_per_second: 1.0,
             timeout_secs: 60,
             max_retries: 5,
+            ..ClientConfig::default()
         };
         let client = PrehrajtoClient::with_config(config);
         assert!(client.is_ok());

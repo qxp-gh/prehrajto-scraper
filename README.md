@@ -8,7 +8,7 @@ Async Rust library for searching videos and getting download links from [prehraj
 - 📥 Generate direct download URLs
 - 🎬 Quality selection — all variants, best by default
 - 📝 Subtitle extraction — VTT tracks with language metadata
-- 📦 Original file download via cookie-based flow
+- 📦 Original file download via authenticated (`refresh_token`) flow
 - ⏱️ Built-in rate limiting to respect server limits
 - 🔄 Automatic retry with exponential backoff
 - 🖥️ Tauri plugin for desktop apps
@@ -83,12 +83,21 @@ Customize the HTTP client behavior:
 use prehrajto_core::{PrehrajtoScraper, ClientConfig};
 
 let config = ClientConfig {
-    requests_per_second: 1.0,  // Max requests per second
-    timeout_secs: 60,          // Request timeout
-    max_retries: 5,            // Retry attempts on failure
+    requests_per_second: 1.0,            // Max requests per second
+    timeout_secs: 60,                    // Request timeout
+    max_retries: 5,                      // Retry attempts on failure
+    refresh_token: Some("…".into()),     // Optional: auth for original-file download
 };
 
 let scraper = PrehrajtoScraper::with_config(config)?;
+```
+
+The original-file download (`fetch_original_download`) requires a logged-in
+session. Pass the `refresh_token` cookie from a logged-in browser — search and
+streaming work without it:
+
+```rust
+let scraper = PrehrajtoScraper::with_refresh_token("your_refresh_token_cookie")?;
 ```
 
 ## 📋 VideoResult

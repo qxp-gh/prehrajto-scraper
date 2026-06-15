@@ -71,7 +71,7 @@ pub struct SubtitleTrack {
 
 /// Complete video page data — sources + subtitles
 ///
-/// Returned by [`crate::PrehrajtoScraper::get_video_page_data`] to avoid
+/// Returned by [`crate::PrehrajtoScraper::fetch_video_page`] to avoid
 /// double-fetching the video page when both sources and subtitles are needed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoPageData {
