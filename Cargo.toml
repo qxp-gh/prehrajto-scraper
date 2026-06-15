@@ -10,7 +10,7 @@ version = "0.5.0"
 edition = "2024"
 license = "MIT"
 authors = ["xdkid1337"]
-repository = "https://github.com/xdkid1337/prehrajto-scraper"
+repository = "https://github.com/qxp-gh/prehrajto-scraper"
 
 [workspace.dependencies]
 # Async runtime
