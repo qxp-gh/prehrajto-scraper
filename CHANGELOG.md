@@ -13,7 +13,7 @@ no further breaking changes before a 2.0. No code or API changes since 0.5.0.
 
 ### Fixed
 - `repository` metadata now points at the current location
-  (`github.com/qxp-gh/prehrajto-scraper`). crates.io releases are immutable, so
+  (`github.com/jaymadeapp/prehrajto-scraper`). crates.io releases are immutable, so
   0.5.0 and earlier keep the old (redirected) URL; the crate's main page reflects
   this latest release.
 
