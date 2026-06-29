@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (pre-1.0: breaking changes bump the minor version).
 
+## [1.1.0] - 2026-06-29
+
+Performance release. No API changes — fully backwards compatible with 1.0.0.
+Focused on cutting prehraj.to round-trips and per-request CPU on the hot paths
+(search, CDN-URL resolution, page parsing).
+
+### Changed
+- **Rate limiter no longer holds its mutex across the sleep.** `RateLimiter::acquire`
+  now reserves the next `min_interval`-spaced slot under the lock and releases it
+  before sleeping. Concurrent callers (e.g. a fan-out of CDN-URL resolutions) get
+  distinct staggered slots without serializing their lock acquisition — same
+  throughput, far less head-of-line blocking under concurrency.
+- **`fetch_original_download` warms the session at most once per scraper instance.**
+  The two-step cookie flow (warmup video page → `?do=download`) previously fetched
+  the video page on *every* call. The shared cookie jar keeps the `_nss`/`u_uid`
+  session cookies, so subsequent calls skip the warmup — roughly halving the
+  round-trips on the original-file resolve path. If a download page comes back
+  without a CDN link (a likely sign the session lapsed), the warmup is re-run once
+  and the download retried before returning `NotFound`.
+- **Connection reuse tuning.** The HTTP client now sets `tcp_keepalive` (60s) and a
+  longer `pool_idle_timeout` (120s) so pooled TLS connections to prehraj.to stay
+  warm between requests, skipping repeat handshakes.
+
+### Performance
+- **Regexes and CSS selectors are compiled once.** Every parser regex (VideoJS /
+  JWPlayer source & track blocks, JS-redirect, generic CDN, resolution) and every
+  selector (search cards, `a[href]`, `video`/`source[src]`, meta-refresh) is now a
+  `LazyLock` static instead of being recompiled on each call. `parse_search_results`
+  in particular re-parsed `h3`/`div`/`span.format__text` per result card.
+
 ## [1.0.0] - 2026-06-15
 
 First stable release. The API introduced in 0.5.0 is now committed to as stable —

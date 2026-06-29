@@ -3,9 +3,22 @@
 //! Parses HTML from search results page and extracts video information.
 
 use scraper::{Html, Selector, ElementRef};
-use crate::error::{PrehrajtoError, Result};
+use std::sync::LazyLock;
+use crate::error::Result;
 use crate::types::VideoResult;
 use crate::url::{build_download_url, extract_video_info};
+
+// Selectors are compiled once and reused — `parse_video_card` runs per result, so
+// re-parsing these on every card (20–50× per search page) was pure wasted CPU.
+static SEL_MAIN_A: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("main a[href]").expect("valid 'main a[href]' selector"));
+static SEL_H3: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("h3").expect("valid 'h3' selector"));
+static SEL_DIV: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("div").expect("valid 'div' selector"));
+static SEL_FORMAT_TEXT: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("span.format__text").expect("valid 'span.format__text' selector")
+});
 
 /// Parses search results HTML and returns a list of video results
 ///
@@ -19,15 +32,12 @@ use crate::url::{build_download_url, extract_video_info};
 /// Returns `ParseError` if HTML structure is invalid
 pub fn parse_search_results(html: &str) -> Result<Vec<VideoResult>> {
     let document = Html::parse_document(html);
-    
+
     // Select all video card links in main content
     // Based on docs: main > div > div contains <a> links for each video
-    let link_selector = Selector::parse("main a[href]")
-        .map_err(|e| PrehrajtoError::ParseError(format!("Invalid selector: {:?}", e)))?;
-    
     let mut results = Vec::new();
-    
-    for element in document.select(&link_selector) {
+
+    for element in document.select(&SEL_MAIN_A) {
         // Try to parse each link as a video card
         if let Some(video) = parse_video_card(&element) {
             results.push(video);
@@ -56,9 +66,8 @@ fn parse_video_card(element: &ElementRef) -> Option<VideoResult> {
     let download_url = build_download_url(&video_slug, &video_id);
     
     // Extract video name from h3
-    let h3_selector = Selector::parse("h3").ok()?;
     let name = element
-        .select(&h3_selector)
+        .select(&SEL_H3)
         .next()
         .map(|el| el.text().collect::<String>().trim().to_string())?;
     
@@ -69,10 +78,9 @@ fn parse_video_card(element: &ElementRef) -> Option<VideoResult> {
     
     // Extract duration, quality, and file size from div elements
     // Only get direct text content from leaf divs (divs without child divs)
-    let div_selector = Selector::parse("div").ok()?;
     let mut texts: Vec<String> = Vec::new();
-    
-    for div in element.select(&div_selector) {
+
+    for div in element.select(&SEL_DIV) {
         // Get only direct text nodes, not nested content
         let text: String = div.text()
             .next()
@@ -125,9 +133,7 @@ fn is_duration_format(text: &str) -> bool {
 ///
 /// Looks for span.format__text containing "HD"
 fn extract_quality_from_element(element: &ElementRef) -> Option<String> {
-    let format_selector = Selector::parse("span.format__text").ok()?;
-    
-    for span in element.select(&format_selector) {
+    for span in element.select(&SEL_FORMAT_TEXT) {
         let text: String = span.text().collect::<String>().trim().to_string();
         if text.to_uppercase().contains("HD") {
             return Some(text);

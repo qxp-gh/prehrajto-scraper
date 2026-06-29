@@ -7,6 +7,84 @@ use crate::error::{PrehrajtoError, Result};
 use crate::types::{SubtitleTrack, VideoSource};
 use regex::Regex;
 use scraper::{Html, Selector};
+use std::sync::LazyLock;
+
+// ---------------------------------------------------------------------------
+// Lazily-compiled regexes & selectors
+//
+// Compiling a `Regex`/`Selector` is comparatively expensive (and pointless to
+// repeat for a pattern that never changes). These are built once on first use
+// and reused across every parse — both a latency and a CPU win under load.
+// ---------------------------------------------------------------------------
+
+/// `videos.push({ src: "URL", res: 'NUM', label: 'LABEL' ... })` — VideoJS sources.
+static RE_VIDEOJS_SOURCES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"videos\.push\(\{[^}]*src:\s*"([^"]+)"[^}]*res:\s*'(\d+)'[^}]*label:\s*'([^']+)'([^}]*)\}"#,
+    )
+    .expect("valid VideoJS sources regex")
+});
+
+/// `{ file: "...premiumcdn...", label: 'LABEL' }` — JWPlayer sources.
+static RE_JWPLAYER_SOURCES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\{\s*file:\s*"([^"]*premiumcdn[^"]*)"[^}]*label:\s*'([^']+)'"#)
+        .expect("valid JWPlayer sources regex")
+});
+
+/// `{ src: "URL", srclang: "LANG", label: "LABEL", kind: "captions" ... }` — VideoJS tracks.
+static RE_VIDEOJS_TRACKS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\{\s*src:\s*"([^"]+)"[^}]*srclang:\s*"([^"]+)"[^}]*label:\s*"([^"]+)"[^}]*kind:\s*"captions"([^}]*)\}"#,
+    )
+    .expect("valid VideoJS tracks regex")
+});
+
+/// `{ file: "URL.vtt...", label: "LABEL", kind: "captions" }` — JWPlayer tracks.
+static RE_JWPLAYER_TRACKS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\{\s*file:\s*"([^"]+\.vtt[^"]*)"[^}]*label:\s*"([^"]+)"[^}]*kind:\s*"captions"([^}]*)\}"#,
+    )
+    .expect("valid JWPlayer tracks regex")
+});
+
+/// JS-redirect patterns (`window.location[.href] = "...premiumcdn..."`).
+static RE_JS_REDIRECTS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+    [
+        Regex::new(r#"window\.location\.href\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#)
+            .expect("valid window.location.href regex"),
+        Regex::new(r#"window\.location\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#)
+            .expect("valid window.location regex"),
+        Regex::new(r#"location\.href\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#)
+            .expect("valid location.href regex"),
+        Regex::new(r#"location\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#)
+            .expect("valid location regex"),
+    ]
+});
+
+/// Generic premiumcdn URL carrying a `token`/`expires` query param.
+static RE_CDN_GENERIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"https?://[^"'\s<>]+premiumcdn\.net[^"'\s<>]*(?:token|expires)[^"'\s<>]*"#)
+        .expect("valid generic CDN regex")
+});
+
+/// Looser premiumcdn URL fallback (no token/expires requirement).
+static RE_CDN_FALLBACK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"https?://[^"'\s<>]+premiumcdn\.net[^"'\s<>]+"#).expect("valid fallback CDN regex")
+});
+
+/// `(\d{3,4})p` — resolution embedded in freeform text (filenames).
+static RE_RESOLUTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d{3,4})p").expect("valid resolution regex"));
+
+static SEL_A_HREF: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("a[href]").expect("valid a[href] selector"));
+static SEL_VIDEO_SRC: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("video[src]").expect("valid video[src] selector"));
+static SEL_SOURCE_SRC: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("source[src]").expect("valid source[src] selector"));
+static SEL_META_REFRESH: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(r#"meta[http-equiv="refresh"]"#).expect("valid meta-refresh selector")
+});
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -68,10 +146,8 @@ pub fn parse_subtitles(html: &str) -> Vec<SubtitleTrack> {
 /// Returns `NotFound` if no CDN link found in the redirect page
 pub fn parse_original_download(html: &str) -> Result<VideoSource> {
     let document = Html::parse_document(html);
-    let selector = Selector::parse("a[href]")
-        .map_err(|_| PrehrajtoError::ParseError("Invalid selector".to_string()))?;
 
-    for element in document.select(&selector) {
+    for element in document.select(&SEL_A_HREF) {
         if let Some(href) = element.value().attr("href")
             && is_cdn_url(href)
         {
@@ -159,8 +235,7 @@ fn parse_resolution_from_label(label: &str) -> u32 {
 /// Tries to find a resolution pattern in freeform text (e.g. filenames)
 fn parse_resolution_from_text(text: &str) -> u32 {
     // Match patterns like "2160p", "1080p", "4K"
-    if let Ok(re) = Regex::new(r"(\d{3,4})p")
-        && let Some(caps) = re.captures(text)
+    if let Some(caps) = RE_RESOLUTION.captures(text)
         && let Some(m) = caps.get(1)
         && let Ok(res) = m.as_str().parse::<u32>()
     {
@@ -225,13 +300,7 @@ fn extract_videojs_sources(html: &str) -> Vec<VideoSource> {
 
     // Match: videos.push({ src: "URL", type: '...', res: 'NUM', label: 'LABEL' ... })
     // The `default: true` may or may not be present
-    let Ok(re) = Regex::new(
-        r#"videos\.push\(\{[^}]*src:\s*"([^"]+)"[^}]*res:\s*'(\d+)'[^}]*label:\s*'([^']+)'([^}]*)\}"#,
-    ) else {
-        return sources;
-    };
-
-    for caps in re.captures_iter(html) {
+    for caps in RE_VIDEOJS_SOURCES.captures_iter(html) {
         let url = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         let res_str = caps.get(2).map(|m| m.as_str()).unwrap_or("0");
         let label = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
@@ -257,13 +326,7 @@ fn extract_jwplayer_sources(html: &str) -> Vec<VideoSource> {
     let mut sources = Vec::new();
 
     // Match: { file: "URL...premiumcdn...", label: 'LABEL' }
-    let Ok(re) = Regex::new(
-        r#"\{\s*file:\s*"([^"]*premiumcdn[^"]*)"[^}]*label:\s*'([^']+)'"#,
-    ) else {
-        return sources;
-    };
-
-    for caps in re.captures_iter(html) {
+    for caps in RE_JWPLAYER_SOURCES.captures_iter(html) {
         let url = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         let label = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
         let resolution = parse_resolution_from_label(&label);
@@ -293,13 +356,7 @@ fn extract_videojs_tracks(html: &str) -> Vec<SubtitleTrack> {
 
     // Match: { src: "URL", srclang: "LANG", label: "LABEL", kind: "captions" ... }
     // `default: true` may or may not be present
-    let Ok(re) = Regex::new(
-        r#"\{\s*src:\s*"([^"]+)"[^}]*srclang:\s*"([^"]+)"[^}]*label:\s*"([^"]+)"[^}]*kind:\s*"captions"([^}]*)\}"#,
-    ) else {
-        return tracks;
-    };
-
-    for caps in re.captures_iter(html) {
+    for caps in RE_VIDEOJS_TRACKS.captures_iter(html) {
         let url = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         let language = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
         let raw_label = caps.get(3).map(|m| m.as_str()).unwrap_or("");
@@ -326,13 +383,7 @@ fn extract_jwplayer_tracks(html: &str) -> Vec<SubtitleTrack> {
 
     // Match: { file: "URL.vtt...", ... label: "LABEL", kind: "captions" }
     // "default": true may appear with quoted key
-    let Ok(re) = Regex::new(
-        r#"\{\s*file:\s*"([^"]+\.vtt[^"]*)"[^}]*label:\s*"([^"]+)"[^}]*kind:\s*"captions"([^}]*)\}"#,
-    ) else {
-        return tracks;
-    };
-
-    for caps in re.captures_iter(html) {
+    for caps in RE_JWPLAYER_TRACKS.captures_iter(html) {
         let url = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
         let raw_label = caps.get(2).map(|m| m.as_str()).unwrap_or("");
         let rest = caps.get(3).map(|m| m.as_str()).unwrap_or("");
@@ -392,9 +443,8 @@ fn extract_language_from_label(raw: &str) -> String {
 /// Extracts CDN URL from anchor tags
 fn extract_from_anchor(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
-    let selector = Selector::parse("a[href]").ok()?;
 
-    for element in document.select(&selector) {
+    for element in document.select(&SEL_A_HREF) {
         if let Some(href) = element.value().attr("href")
             && is_cdn_url(href)
         {
@@ -408,23 +458,19 @@ fn extract_from_anchor(html: &str) -> Option<String> {
 fn extract_from_video_element(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
 
-    if let Ok(selector) = Selector::parse("video[src]") {
-        for element in document.select(&selector) {
-            if let Some(src) = element.value().attr("src")
-                && is_cdn_url(src)
-            {
-                return Some(decode_html_entities(src));
-            }
+    for element in document.select(&SEL_VIDEO_SRC) {
+        if let Some(src) = element.value().attr("src")
+            && is_cdn_url(src)
+        {
+            return Some(decode_html_entities(src));
         }
     }
 
-    if let Ok(selector) = Selector::parse("source[src]") {
-        for element in document.select(&selector) {
-            if let Some(src) = element.value().attr("src")
-                && is_cdn_url(src)
-            {
-                return Some(decode_html_entities(src));
-            }
+    for element in document.select(&SEL_SOURCE_SRC) {
+        if let Some(src) = element.value().attr("src")
+            && is_cdn_url(src)
+        {
+            return Some(decode_html_entities(src));
         }
     }
 
@@ -433,16 +479,8 @@ fn extract_from_video_element(html: &str) -> Option<String> {
 
 /// Extracts CDN URL from JavaScript redirects
 fn extract_from_javascript(html: &str) -> Option<String> {
-    let patterns = [
-        r#"window\.location\.href\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#,
-        r#"window\.location\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#,
-        r#"location\.href\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#,
-        r#"location\s*=\s*["']([^"']+premiumcdn[^"']+)["']"#,
-    ];
-
-    for pattern in patterns {
-        if let Ok(re) = Regex::new(pattern)
-            && let Some(caps) = re.captures(html)
+    for re in RE_JS_REDIRECTS.iter() {
+        if let Some(caps) = re.captures(html)
             && let Some(url) = caps.get(1)
         {
             return Some(url.as_str().to_string());
@@ -455,9 +493,8 @@ fn extract_from_javascript(html: &str) -> Option<String> {
 /// Extracts CDN URL from meta refresh tag
 fn extract_from_meta_refresh(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
-    let selector = Selector::parse(r#"meta[http-equiv="refresh"]"#).ok()?;
 
-    for element in document.select(&selector) {
+    for element in document.select(&SEL_META_REFRESH) {
         if let Some(content) = element.value().attr("content")
             && let Some(url_part) = content.split("url=").nth(1)
         {
@@ -473,19 +510,11 @@ fn extract_from_meta_refresh(html: &str) -> Option<String> {
 
 /// Generic regex search for CDN URLs in HTML
 fn extract_cdn_url_generic(html: &str) -> Option<String> {
-    let re = Regex::new(
-        r#"https?://[^"'\s<>]+premiumcdn\.net[^"'\s<>]*(?:token|expires)[^"'\s<>]*"#,
-    )
-    .ok()?;
-
-    if let Some(m) = re.find(html) {
+    if let Some(m) = RE_CDN_GENERIC.find(html) {
         return Some(decode_html_entities(m.as_str()));
     }
 
-    let re_fallback =
-        Regex::new(r#"https?://[^"'\s<>]+premiumcdn\.net[^"'\s<>]+"#).ok()?;
-
-    re_fallback
+    RE_CDN_FALLBACK
         .find(html)
         .map(|m| decode_html_entities(m.as_str()))
 }

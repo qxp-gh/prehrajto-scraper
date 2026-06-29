@@ -42,10 +42,16 @@ impl Default for ClientConfig {
 
 /// Rate limiter to control request frequency
 ///
-/// Ensures requests are spaced at least `min_interval` apart.
+/// Ensures requests are spaced at least `min_interval` apart, even across many
+/// concurrent callers (e.g. a fan-out of CDN-URL resolutions).
 pub struct RateLimiter {
     min_interval: Duration,
-    last_request: Arc<Mutex<Instant>>,
+    /// Timestamp of the most recently *reserved* request slot (not necessarily
+    /// already fired). Concurrent callers each reserve the next slot under the
+    /// lock and then release it before sleeping, so the lock is never held across
+    /// an `.await` and N concurrent requests stagger by `min_interval` without
+    /// serializing their network round-trips behind one another.
+    next_slot: Arc<Mutex<Instant>>,
 }
 
 impl RateLimiter {
@@ -57,24 +63,32 @@ impl RateLimiter {
         let min_interval = Duration::from_secs_f64(1.0 / requests_per_second);
         Self {
             min_interval,
-            last_request: Arc::new(Mutex::new(Instant::now() - min_interval)),
+            next_slot: Arc::new(Mutex::new(Instant::now() - min_interval)),
         }
     }
 
     /// Acquire permission to make a request
     ///
-    /// If called before the minimum interval has passed since the last request,
-    /// this method will sleep until the interval has elapsed.
+    /// Reserves the next available `min_interval`-spaced slot, releases the lock,
+    /// then sleeps until that slot. Because the slot is reserved (not just read)
+    /// while holding the lock, concurrent callers get distinct, monotonically
+    /// increasing slots and never block each other's lock acquisition while one
+    /// is sleeping.
     pub async fn acquire(&self) {
-        let mut last = self.last_request.lock().await;
-        let elapsed = last.elapsed();
+        let slot = {
+            let mut next = self.next_slot.lock().await;
+            let now = Instant::now();
+            // Next permitted slot: one interval after the previous reservation,
+            // but never in the past (so sparse traffic doesn't accumulate credit).
+            let slot = (*next + self.min_interval).max(now);
+            *next = slot;
+            slot
+        }; // lock dropped here — we sleep WITHOUT holding it
 
-        if elapsed < self.min_interval {
-            let wait_time = self.min_interval - elapsed;
-            sleep(wait_time).await;
+        let now = Instant::now();
+        if slot > now {
+            sleep(slot - now).await;
         }
-
-        *last = Instant::now();
     }
 
     /// Get the minimum interval between requests
@@ -111,6 +125,12 @@ impl PrehrajtoClient {
             .timeout(Duration::from_secs(config.timeout_secs))
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())
+            // Keep pooled connections to prehraj.to warm: every search / page fetch /
+            // CDN-URL resolve hits the same host, so reusing the TLS connection skips
+            // a fresh handshake on each request. The rate limiter spaces requests
+            // ~hundreds of ms apart, well within these idle windows.
+            .tcp_keepalive(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(120))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 headers.insert(

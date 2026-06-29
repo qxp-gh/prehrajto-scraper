@@ -2,6 +2,8 @@
 //!
 //! Provides the high-level API combining HTTP client and parsers.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::client::{ClientConfig, PrehrajtoClient};
 use crate::error::{PrehrajtoError, Result};
 use crate::parser::{
@@ -18,6 +20,15 @@ use crate::url::{build_download_url, build_search_url};
 /// getting download URLs.
 pub struct PrehrajtoScraper {
     client: PrehrajtoClient,
+    /// Whether the shared cookie jar has already been seeded with the session
+    /// cookies (`_nss`, `u_uid`) that the `?do=download` page requires.
+    ///
+    /// `fetch_original_download` normally does a two-step flow (warmup video page
+    /// → download page). Because the client's cookie jar is long-lived and shared,
+    /// those cookies persist after the first warmup, so subsequent downloads can
+    /// skip the extra round-trip. Reset (and retried with a fresh warmup) if a
+    /// download page ever comes back without a CDN link, in case the session lapsed.
+    download_session_warm: AtomicBool,
 }
 
 impl PrehrajtoScraper {
@@ -30,7 +41,10 @@ impl PrehrajtoScraper {
     /// Returns error if HTTP client initialization fails
     pub fn new() -> Result<Self> {
         let client = PrehrajtoClient::new()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            download_session_warm: AtomicBool::new(false),
+        })
     }
 
     /// Create a new scraper with custom client configuration
@@ -45,7 +59,10 @@ impl PrehrajtoScraper {
     /// Returns error if HTTP client initialization fails
     pub fn with_config(config: ClientConfig) -> Result<Self> {
         let client = PrehrajtoClient::with_config(config)?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            download_session_warm: AtomicBool::new(false),
+        })
     }
 
     /// Create a scraper authenticated with a `refresh_token` cookie
@@ -232,9 +249,15 @@ impl PrehrajtoScraper {
 
     /// Get the original uploaded file URL via download flow
     ///
-    /// Performs a two-step cookie flow:
-    /// 1. GET video page — sets required cookies (`_nss`, `u_uid`)
+    /// Uses a two-step cookie flow, but warms the session **at most once** per
+    /// scraper instance:
+    /// 1. (first call only) GET video page — sets required cookies (`_nss`, `u_uid`)
     /// 2. GET `?do=download` with cookies — returns redirect page with original file link
+    ///
+    /// The shared cookie jar keeps the session cookies after the first warmup, so
+    /// later calls skip step 1 — halving the round-trips on the hot resolve path.
+    /// If a download page returns without a CDN link (a likely sign the session
+    /// lapsed), the warmup is re-run once and the download retried before giving up.
     ///
     /// # Arguments
     /// * `video_slug` - URL slug of the video
@@ -258,15 +281,29 @@ impl PrehrajtoScraper {
             ));
         }
 
-        // Step 1: Fetch video page to set cookies (_nss, u_uid)
         let video_path = format!("/{}/{}", video_slug, video_id);
-        let _ = self.client.fetch(&video_path).await?;
-
-        // Step 2: Fetch download page with cookies (no redirect following)
         let download_path = format!("/{}/{}?do=download", video_slug, video_id);
-        let html = self.client.fetch_download_page(&download_path).await?;
 
-        parse_original_download(&html)
+        // Step 1: warm the session cookies (_nss, u_uid) — only when not already warm.
+        if !self.download_session_warm.load(Ordering::Relaxed) {
+            let _ = self.client.fetch(&video_path).await?;
+            self.download_session_warm.store(true, Ordering::Relaxed);
+        }
+
+        // Step 2: fetch the download page with cookies (no redirect following).
+        let html = self.client.fetch_download_page(&download_path).await?;
+        match parse_original_download(&html) {
+            Ok(source) => Ok(source),
+            Err(PrehrajtoError::NotFound(_)) => {
+                // The cached session may have lapsed (cookies expired). Re-warm once
+                // and retry the download before surfacing NotFound.
+                let _ = self.client.fetch(&video_path).await?;
+                self.download_session_warm.store(true, Ordering::Relaxed);
+                let html = self.client.fetch_download_page(&download_path).await?;
+                parse_original_download(&html)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Search for a movie by name, returning the best match
